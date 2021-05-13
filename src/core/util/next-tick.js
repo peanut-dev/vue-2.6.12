@@ -10,6 +10,12 @@ export let isUsingMicroTask = false
 const callbacks = []
 let pending = false
 
+/**
+ * 做了三件事：
+ *   1、将 pending 置为 false
+ *   2、清空 callbacks 数组
+ *   3、执行 callbacks 数组中的每一个函数（flushSchedulerQueue）
+ */
 function flushCallbacks () {
   pending = false
   const copies = callbacks.slice(0)
@@ -30,6 +36,7 @@ function flushCallbacks () {
 // where microtasks have too high a priority and fire in between supposedly
 // sequential events (e.g. #4521, #6690, which have workarounds)
 // or even between bubbling of the same event (#6566).
+// 可以看到 timerFunc 的作用很简单，就是将 flushCallbacks 函数放入浏览器的异步任务队列中
 let timerFunc
 
 // The nextTick behavior leverages the microtask queue, which can be accessed
@@ -42,7 +49,13 @@ let timerFunc
 if (typeof Promise !== 'undefined' && isNative(Promise)) {
   const p = Promise.resolve()
   timerFunc = () => {
+    // 在 微任务队列 中放入 flushCallbacks 函数
     p.then(flushCallbacks)
+    /**
+    * 在有问题的UIWebViews中，Promise.then不会完全中断，但是它可能会陷入怪异的状态，
+    * 在这种状态下，回调被推入微任务队列，但队列没有被刷新，直到浏览器需要执行其他工作，例如处理一个计时器。
+    * 因此，我们可以通过添加空计时器来“强制”刷新微任务队列。
+    */
     // In problematic UIWebViews, Promise.then doesn't completely break, but
     // it can get stuck in a weird state where callbacks are pushed into the
     // microtask queue but the queue isn't being flushed, until the browser
@@ -75,19 +88,34 @@ if (typeof Promise !== 'undefined' && isNative(Promise)) {
   // Technically it leverages the (macro) task queue,
   // but it is still a better choice than setTimeout.
   timerFunc = () => {
+    // 再就是 setImmediate，它其实已经是一个宏任务了，但仍然比 setTimeout 要好
     setImmediate(flushCallbacks)
   }
 } else {
   // Fallback to setTimeout.
+  // 最后没办法，则使用 setTimeout
   timerFunc = () => {
     setTimeout(flushCallbacks, 0)
   }
 }
 
+/**
+ * 完成两件事：
+ *   1、用 try catch 包装 flushSchedulerQueue 函数，然后将其放入 callbacks 数组
+ *   2、如果 pending 为 false，表示现在浏览器的任务队列中没有 flushCallbacks 函数
+ *     如果 pending 为 true，则表示浏览器的任务队列中已经被放入了 flushCallbacks 函数，
+ *     待执行 flushCallbacks 函数时，pending 会被再次置为 false，表示下一个 flushCallbacks 函数可以进入
+ *     浏览器的任务队列了
+ * pending 的作用：保证在同一时刻，浏览器的任务队列中只有一个 flushCallbacks 函数
+ * @param {*} cb 接收一个回调函数 => flushSchedulerQueue
+ * @param {*} ctx 上下文
+ * @returns 
+ */
 export function nextTick (cb?: Function, ctx?: Object) {
   let _resolve
   callbacks.push(() => {
     if (cb) {
+      // 用 try catch 包装回调函数，便于错误捕获
       try {
         cb.call(ctx)
       } catch (e) {
@@ -98,6 +126,7 @@ export function nextTick (cb?: Function, ctx?: Object) {
     }
   })
   if (!pending) {
+     // 执行 timerFunc，在浏览器的任务队列中（首选微任务队列）放入 flushCallbacks 函数
     pending = true
     timerFunc()
   }
